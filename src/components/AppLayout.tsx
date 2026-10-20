@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 import { supabase } from "@/integrations/supabase/client";
 import { useCurrentUser } from "@/hooks/useCurrentUser";
 import { roleLabels } from "@/lib/status";
+import { highestRole } from "@/hooks/useUserRoles";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTr } from "@/lib/i18n";
 import { LANGS } from "@/lib/translations";
@@ -90,7 +91,7 @@ export function AppLayout() {
     navigate({ to: "/auth", replace: true });
   };
 
-  const role = user?.roles?.[0];
+  const role = highestRole(user?.roles);
 
   return (
     <div className="flex min-h-screen w-full bg-background">

@@ -1,5 +1,6 @@
+import { useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { Settings, Users, SlidersHorizontal, FileText, Plug, ScrollText } from "lucide-react";
+import { Settings, Users, SlidersHorizontal, FileText, Plug, ScrollText, ShieldCheck } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { StatusBadge } from "@/components/StatusBadge";
 import { DataTable } from "@/components/DataTable";
@@ -9,6 +10,9 @@ import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { useRows } from "@/lib/db";
+import { useCurrentUser } from "@/hooks/useCurrentUser";
+import { useUsersWithRoles, highestRole, type UserWithRoles } from "@/hooks/useUserRoles";
+import { UserAccessDialog } from "@/components/UserAccessDialog";
 import { roleLabels } from "@/lib/status";
 import { fmtDateTime } from "@/lib/format";
 import { toast } from "sonner";
@@ -18,7 +22,6 @@ export const Route = createFileRoute("/_authenticated/configuracoes")({
 });
 
 function ConfiguracoesPage() {
-  const { data: profiles = [] } = useRows<any>("profiles", { order: "created_at", ascending: true });
   const { data: logs = [] } = useRows<any>("activity_logs", { order: "created_at", ascending: false });
   const { data: settings = [] } = useRows<any>("settings");
 
@@ -49,16 +52,7 @@ function ConfiguracoesPage() {
         </TabsContent>
 
         <TabsContent value="usuarios">
-          <DataTable
-            rows={profiles}
-            columns={[
-              { key: "full_name", header: "Nome", render: (r) => <span className="font-medium">{r.full_name ?? "—"}</span> },
-              { key: "email", header: "E-mail", render: (r) => <span className="text-xs text-muted-foreground">{r.email}</span> },
-              { key: "department", header: "Departamento", render: (r) => <span className="text-xs">{r.department ?? "—"}</span> },
-              { key: "created_at", header: "Criado em", render: (r) => <span className="text-xs">{fmtDateTime(r.created_at)}</span> },
-            ]}
-          />
-          <p className="mt-3 text-xs text-muted-foreground">Níveis de acesso: {Object.values(roleLabels).join(" · ")}.</p>
+          <UsuariosTab />
         </TabsContent>
 
         <TabsContent value="parametros">
@@ -100,6 +94,82 @@ function ConfiguracoesPage() {
         </TabsContent>
       </Tabs>
     </div>
+  );
+}
+
+function UsuariosTab() {
+  const { data: me } = useCurrentUser();
+  const { data: users = [], isLoading } = useUsersWithRoles();
+  const [editing, setEditing] = useState<UserWithRoles | null>(null);
+
+  const isAdmin = !!me?.roles?.includes("admin");
+  const adminCount = users.filter((u) => u.roles.includes("admin")).length;
+
+  return (
+    <>
+      {!isAdmin && (
+        <p className="mb-3 rounded-xl border border-border bg-muted/50 px-4 py-3 text-sm text-muted-foreground">
+          Apenas administradores podem ver e alterar as permissões da equipe.
+        </p>
+      )}
+      <DataTable
+        rows={users}
+        loading={isLoading}
+        searchKeys={["full_name", "email", "department"]}
+        onRowClick={isAdmin ? (r) => setEditing(r as UserWithRoles) : undefined}
+        empty="Nenhum usuário cadastrado ainda."
+        columns={[
+          { key: "full_name", header: "Nome", render: (r) => (
+            <div>
+              <p className="font-medium text-foreground">{r.full_name ?? "—"}</p>
+              <p className="text-xs text-muted-foreground">{r.email}</p>
+            </div>
+          ) },
+          { key: "roles", header: "Permissões", render: (r) => (
+            r.roles.length === 0
+              ? <span className="text-xs text-muted-foreground">Sem acesso</span>
+              : (
+                <div className="flex flex-wrap gap-1">
+                  {r.roles.map((role: string) => (
+                    <StatusBadge
+                      key={role}
+                      label={roleLabels[role] ?? role}
+                      tone={role === "admin" ? "gold" : role === "ceo" ? "navy" : "muted"}
+                    />
+                  ))}
+                </div>
+              )
+          ) },
+          { key: "department", header: "Departamento", render: (r) => (
+            <span className="text-xs">{r.department ?? "—"}</span>
+          ) },
+          { key: "created_at", header: "Criado em", render: (r) => (
+            <span className="text-xs">{fmtDateTime(r.created_at)}</span>
+          ) },
+          { key: "actions", header: "", render: (r) => (
+            isAdmin ? (
+              <div className="flex justify-end" onClick={(e) => e.stopPropagation()}>
+                <Button size="sm" variant="outline" onClick={() => setEditing(r as UserWithRoles)}>
+                  <ShieldCheck className="mr-1.5 h-4 w-4" /> Permissões
+                </Button>
+              </div>
+            ) : null
+          ), className: "text-right" },
+        ]}
+      />
+      <p className="mt-3 text-xs text-muted-foreground">
+        O primeiro usuário cadastrado vira administrador automaticamente. O papel em vigor no
+        cabeçalho é o de maior autoridade: {highestRole(me?.roles) ? roleLabels[highestRole(me?.roles)!] : "—"}.
+      </p>
+
+      <UserAccessDialog
+        user={editing}
+        open={!!editing}
+        onOpenChange={(v) => !v && setEditing(null)}
+        isSelf={editing?.id === me?.id}
+        adminCount={adminCount}
+      />
+    </>
   );
 }
 

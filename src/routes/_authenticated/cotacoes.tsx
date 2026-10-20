@@ -7,16 +7,17 @@ import {
 import { PageHeader } from "@/components/PageHeader";
 import { DataTable } from "@/components/DataTable";
 import { StatusBadge } from "@/components/StatusBadge";
+import { QuoteKanban } from "@/components/QuoteKanban";
 import { RecordDialog, type Field } from "@/components/RecordDialog";
 import { Button } from "@/components/ui/button";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { useRows, useSaveRow, useArchiveRow, logActivity, nextDocumentNumber } from "@/lib/db";
+import { useRows, useSaveRow, useArchiveRow, logActivity, nextDocumentNumber, describeDbError } from "@/lib/db";
 import { supabase } from "@/integrations/supabase/client";
-import { quoteStatus, quoteColumns } from "@/lib/status";
-import { money, fmtDate, hoursSince } from "@/lib/format";
+import { quoteStatus } from "@/lib/status";
+import { money, fmtDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { useQueryClient } from "@tanstack/react-query";
@@ -45,8 +46,6 @@ function CotacoesPage() {
     setOpen(true);
   };
   const [detail, setDetail] = useState<any>(null);
-  const [draggedId, setDraggedId] = useState<string | null>(null);
-  const [dragOverCol, setDragOverCol] = useState<string | null>(null);
 
   const custName = (id: string) => customers.find((c) => c.id === id)?.name ?? "—";
 
@@ -65,7 +64,7 @@ function CotacoesPage() {
     { name: "exchange_rate", label: "Câmbio", type: "number" },
     { name: "desired_margin", label: "Margem desejada (%)", type: "number" },
     { name: "final_price", label: "Preço final (USD)", type: "number" },
-    { name: "status", label: "Status", type: "select", options: quoteColumns.map((s) => ({ value: s, label: quoteStatus[s].label })) },
+    { name: "status", label: "Status", type: "select", options: Object.entries(quoteStatus).map(([v, e]) => ({ value: v, label: e.label })) },
     { name: "notes", label: "Observações", type: "textarea" },
   ];
 
@@ -76,19 +75,17 @@ function CotacoesPage() {
     setDetail(null);
   };
 
-  const handleDrop = async (col: string) => {
-    const id = draggedId;
-    setDraggedId(null);
-    setDragOverCol(null);
-    if (!id) return;
-    const quote = quotes.find((q) => q.id === id);
-    if (!quote || quote.status === col) return;
-    // optimistic update
+  const handleMove = async (quote: any, col: string) => {
+    // Atualiza na tela antes da ida ao banco — o card não "pisca" de volta.
     qc.setQueryData(["quotes"], (old: any) =>
-      Array.isArray(old) ? old.map((q) => (q.id === id ? { ...q, status: col } : q)) : old,
+      Array.isArray(old) ? old.map((q) => (q.id === quote.id ? { ...q, status: col } : q)) : old,
     );
-    await supabase.from("quotes").update({ status: col as any }).eq("id", id);
+    const { error } = await supabase.from("quotes").update({ status: col as any }).eq("id", quote.id);
     qc.invalidateQueries({ queryKey: ["quotes"] });
+    if (error) {
+      toast.error(describeDbError(error));
+      return;
+    }
     logActivity("quotes", `cotação -> ${quoteStatus[col]?.label ?? col}`, quote.internal_number);
     toast.success(`${quote.internal_number} → ${tr(quoteStatus[col]?.label ?? col)}`);
   };
@@ -109,67 +106,12 @@ function CotacoesPage() {
         </TabsList>
 
         <TabsContent value="kanban">
-          <div className="flex gap-3 overflow-x-auto pb-4">
-            {quoteColumns.map((col) => {
-              const items = quotes.filter((q) => q.status === col);
-              const isOver = dragOverCol === col;
-              return (
-                <div
-                  key={col}
-                  className="flex w-72 shrink-0 flex-col"
-                  onDragOver={(e) => { e.preventDefault(); if (dragOverCol !== col) setDragOverCol(col); }}
-                  onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOverCol((c) => (c === col ? null : c)); }}
-                  onDrop={() => handleDrop(col)}
-                >
-                  <div className="mb-2 flex items-center justify-between px-1">
-                    <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{tr(quoteStatus[col].label)}</span>
-                    <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">{items.length}</span>
-                  </div>
-                  <div
-                    className={cn(
-                      "min-h-24 space-y-2 rounded-xl p-1 transition-colors",
-                      isOver && "bg-primary/5 ring-2 ring-primary/30 ring-inset",
-                    )}
-                  >
-                    {items.map((q) => {
-                      const stale = !["aprovado", "perdido", "cancelado"].includes(q.status) && hoursSince(q.last_followup) > 24;
-                      return (
-                        <div
-                          key={q.id}
-                          draggable
-                          onDragStart={() => setDraggedId(q.id)}
-                          onDragEnd={() => { setDraggedId(null); setDragOverCol(null); }}
-                          onClick={() => setDetail(q)}
-                          className={cn(
-                            "w-full cursor-grab rounded-xl border bg-card p-3 text-left shadow-soft transition-all hover:shadow-card active:cursor-grabbing",
-                            q.is_aog && "border-aog/40 ring-1 ring-aog/20",
-                            draggedId === q.id && "rotate-1 opacity-50",
-                          )}
-                        >
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="font-mono text-xs font-semibold text-foreground">{q.internal_number}</span>
-                            {q.is_aog && <StatusBadge label="AOG" tone="aog" />}
-                          </div>
-                          <p className="mt-1 text-sm font-medium text-foreground">{custName(q.customer_id)}</p>
-                          <p className="text-xs text-muted-foreground">{q.aircraft ?? "—"}</p>
-                          <div className="mt-2 flex items-center justify-between">
-                            <span className="text-sm font-semibold text-foreground">{money(q.final_price)}</span>
-                            <span className="text-xs text-muted-foreground">{Number(q.real_margin ?? 0).toFixed(0)}%</span>
-                          </div>
-                          {stale && (
-                            <p className="mt-1.5 flex items-center gap-1 text-[11px] font-medium text-warning-foreground">
-                              <Clock className="h-3 w-3" /> Follow-up &gt; 24h
-                            </p>
-                          )}
-                        </div>
-                      );
-                    })}
-                    {items.length === 0 && <p className="rounded-lg border border-dashed py-6 text-center text-xs text-muted-foreground">{tr("Vazio")}</p>}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+          <QuoteKanban
+            quotes={quotes}
+            customerName={custName}
+            onOpen={setDetail}
+            onMove={handleMove}
+          />
         </TabsContent>
 
         <TabsContent value="tabela">
